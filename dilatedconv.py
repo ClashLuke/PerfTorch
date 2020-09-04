@@ -72,19 +72,3 @@ class NaiveDilatedConv(torch.jit.ScriptModule):
         for i, conv in enumerate(self.convs[1:], 1):
             out = out + conv(inp[:, self.in_features * i:self.in_features * (1 + i)])
         return out
-
-
-c = DilatedConv(128, 96, 4, 512)
-x = torch.randn(8, 128, 512, 512)
-with torch.autograd.profiler.profile() as prof:
-    c(x).mean().backward()
-print(prof.key_averages())
-del c
-del x
-# import timeit
-#
-# print(timeit.timeit("c(x).mean().backward()",
-#                     setup="import torch; c = DilatedConv(128, 96, 4, 512);x = torch.randn(16, 128, 512, 512)",
-#                     globals={'DilatedConv': DilatedConv},
-#                     number=1)
-#       )
