@@ -98,7 +98,7 @@ def get_model(feature_factor: int, device: typing.Union[str, torch.device], loco
 def get_dataset(batch_size: int, training: bool) -> DataLoader:
     transform = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.1307,), (0.3081,))])
     dataset = datasets.MNIST('../data', train=training, download=True, transform=transform)
-    kwargs = {'num_workers': 1, 'pin_memory': True, 'shuffle': True} if torch.cuda.is_available() else {}
+    kwargs = {'num_workers': 8, 'pin_memory': True, 'shuffle': True} if torch.cuda.is_available() else {}
     return DataLoader(dataset, batch_size=batch_size, **kwargs)
 
 
@@ -137,31 +137,31 @@ def run_one(seed: int, feature_factor: int, batch_size: int, epochs: int, locopr
     test_loader = get_dataset(16_384, False)
 
     for _ in range(epochs):
-        yield train(model, device, train_loader, optimizer)
+        train(model, device, train_loader, optimizer)
         yield test(model, device, test_loader)
     if use_cuda:
         torch.cuda.empty_cache()
 
 
 @pytest.mark.parametrize("batch_size", [1024, 8192])
-@pytest.mark.parametrize("locoprop_lr", [1, 0.1])
-@pytest.mark.parametrize("locoprop_iter", [2, 10])
-@pytest.mark.parametrize("feature_factor", [8, 32, 128])
-@pytest.mark.parametrize("learning_rate", [0.1, 0.01, 0.001])
+@pytest.mark.parametrize("locoprop_lr", [1, 0.01])
+@pytest.mark.parametrize("locoprop_iter", [5, 50])
+@pytest.mark.parametrize("feature_factor", [8, 32])
+@pytest.mark.parametrize("learning_rate", [0.1, 0.001])
 @pytest.mark.parametrize("optimizer", [torch.optim.SGD, torch.optim.AdamW, torch.optim.RMSprop])
 @pytest.mark.parametrize("seed", [0])
 def test_main(seed: int, feature_factor: int, batch_size: int, locoprop_lr: float, locoprop_iter: int,
-              learning_rate: float, optimizer: type, epochs: int = 16):
+              learning_rate: float, optimizer: type, epochs: int = 8):
     kwargs = {"seed": seed, "feature_factor": feature_factor, "batch_size": batch_size, "epochs": epochs,
               "locoprop_lr": locoprop_lr, "optimizer": optimizer, "learning_rate": learning_rate
               }
-    epoch = 0
+    epoch = 1
     try:
         baseline_losses = run_one(locoprop_iter=1, **kwargs)
         locoprop_losses = run_one(locoprop_iter=locoprop_iter, **kwargs)
         for baseline, locoprop in zip(baseline_losses, locoprop_losses):
-            msg = f"Baseline ({'train' if epoch % 1 == 0 else 'test'}) better than LocoProp @ Epoch {int(epoch)}"
+            msg = f"Baseline (test) better than LocoProp @ Epoch {int(epoch)}"
             assert baseline >= locoprop, msg
-            epoch += 0.5
+            epoch += 1
     except RuntimeError:
         pytest.skip("OOM")
