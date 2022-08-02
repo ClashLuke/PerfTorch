@@ -10,7 +10,7 @@ setuptools.setup(
     name='perftorch',
     license='BSD',
     description='Native High-Performance PyTorch modules',
-    version='0.0.1',
+    version='0.0.2',
     long_description=README,
     url='https://github.com/clashluke/perftorch',
     packages=setuptools.find_packages(),
