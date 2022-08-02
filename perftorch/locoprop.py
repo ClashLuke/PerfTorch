@@ -8,14 +8,12 @@ from torch.optim.lr_scheduler import LambdaLR
 
 class LocopropFn(Function):
     @staticmethod
-    def forward(ctx, inp: Tensor, mod: Module, optim: type, base_lr: float, act_lr: float, update_iterations: int,
-                local_lr_decay: float):
+    def forward(ctx, inp: Tensor, mod: Module, optim: type, base_lr: float, act_lr: float, update_iterations: int,):
         ctx.mod = mod
         ctx.optim = optim
         ctx.base_lr = base_lr
         ctx.act_lr = act_lr
         ctx.update_iterations = update_iterations
-        ctx.local_lr_decay = local_lr_decay
         ctx.save_for_backward(inp.detach())
         return mod(inp).requires_grad_(inp.requires_grad)
 
@@ -23,7 +21,7 @@ class LocopropFn(Function):
     def backward(ctx, dy: Tensor):
         inp, = ctx.saved_tensors
         optim: Optimizer = ctx.optim(ctx.mod.parameters(), ctx.base_lr)
-        sched = LambdaLR(optim, lambda step: ctx.local_lr_decay ** step)
+        sched = LambdaLR(optim, lambda step: (step + 1) ** -2)
         dx = None
         target = None
         inp = inp.requires_grad_(True)
@@ -52,18 +50,16 @@ class LocopropFn(Function):
 
 
 class LocopropWrapper(Module):
-    def __init__(self, module: Module, base_lr: float, act_lr: float = 1, update_iterations: int = 10,
-                 local_lr_decay: float = 0.4, optim_cls: type = torch.optim.SGD):
+    def __init__(self, module: Module, base_lr: float, act_lr: float = 1, update_iterations: int = 10, optim_cls: type = torch.optim.SGD):
         super(LocopropWrapper, self).__init__()
         self.inner_module = module
         self.base_lr = base_lr
         self.act_lr = act_lr
         self.update_iterations = update_iterations
         self.optim_cls = optim_cls
-        self.local_lr_decay = local_lr_decay
         self.step = 0
 
     def forward(self, inp: Tensor):
         inp.requires_grad_(self.training)
         return LocopropFn.apply(inp, self.inner_module, self.optim_cls, self.base_lr, self.act_lr,
-                                self.update_iterations, self.local_lr_decay)
+                                self.update_iterations)
