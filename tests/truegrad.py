@@ -4,12 +4,15 @@ Base code taken from https://github.com/pytorch/examples/blob/main/mnist/main.py
 from __future__ import print_function
 
 import collections
+import random
 import typing
 
 import pytest
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import tqdm
+import wandb
 from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
 
@@ -87,32 +90,40 @@ class Net(nn.Module):
         return self.fc2(x)
 
 
-def train(model: Net, device: torch.device, train_loader: DataLoader, optimizer: torch.optim.Optimizer) -> float:
+def train(model: Net, device: torch.device, train_loader: DataLoader, optimizer: torch.optim.Optimizer):
     model.train()
     global_loss = 0
+    accuracy = 0
+    batch_idx = 0
     for batch_idx, (data, target) in enumerate(train_loader):
         data, target = data.to(device), target.to(device)
         optimizer.zero_grad()
         output = model(data)
         loss = F.cross_entropy(output, target)
-        global_loss += loss.detach()
+        accuracy += (torch.argmax(output) == target).sum().detach()
+        global_loss += loss.detach() * data.size(0)
         loss.backward()
         optimizer.step()
-    return global_loss.item()
+    global_loss /= len(train_loader)
+    accuracy /= len(train_loader)
+    return global_loss.item(), accuracy.item()
 
 
 @pytest.mark.skip
-def test(model: Net, device: torch.device, test_loader: DataLoader) -> float:
+def test(model: Net, device: torch.device, test_loader: DataLoader):
     model.eval()
-    test_loss = 0
+    loss = 0
+    accuracy = 0
     with torch.no_grad():
         for data, target in test_loader:
             data, target = data.to(device), target.to(device)
             output = model(data)
-            test_loss += F.cross_entropy(output, target, reduction='sum').detach()
+            loss += F.cross_entropy(output, target, reduction='sum').detach()
+            accuracy += (torch.argmax(output) == target).sum().detach()
 
-    test_loss /= len(test_loader.dataset)
-    return test_loss.item()
+    loss /= len(test_loader.dataset)
+    accuracy /= len(test_loader.dataset)
+    return loss.item(), accuracy.item()
 
 
 def get_dataset(batch_size: int, training: bool) -> DataLoader:
@@ -196,29 +207,45 @@ def run_one(seed: int, feature_factor: int, batch_size: int, epochs: int, learni
     test_loader = get_dataset(16_384, False)
 
     for _ in range(epochs):
-        train(model, device, train_loader, optimizer)
-        yield test(model, device, test_loader)
+        train_loss, train_accuracy = train(model, device, train_loader, optimizer)
+        test_loss, test_accuracy = test(model, device, test_loader)
+        yield train_loss, train_accuracy, test_loss, test_accuracy
     if use_cuda:
         torch.cuda.empty_cache()
 
 
-@pytest.mark.parametrize("batch_size", [1024, 8192])
-@pytest.mark.parametrize("feature_factor", [8, 32])
-@pytest.mark.parametrize("learning_rate", [0.1, 0.001])
-@pytest.mark.parametrize("optimizer", [torch.optim.AdamW])
-@pytest.mark.parametrize("seed", [0])
-def test_main(seed: int, feature_factor: int, batch_size: int, learning_rate: float, optimizer: type, epochs: int = 16):
-    kwargs = {"seed": seed, "feature_factor": feature_factor, "batch_size": batch_size, "epochs": epochs,
-              "learning_rate": learning_rate
-              }
-    epoch = 1
-    try:
-        baseline_losses = run_one(use_square=False, **kwargs)
-        truegrad_losses = run_one(use_square=True, **kwargs)
-        for baseline, truegrad in zip(baseline_losses, truegrad_losses):
-            print(f"Baseline: {baseline} - TrueGrad: {truegrad}")
-            msg = f"Baseline (test) better than TrueGrad @ Epoch {int(epoch)}"
-            assert baseline >= truegrad, msg
-            epoch += 1
-    except RuntimeError:
-        pytest.skip("OOM")
+def log_one(seed: int, feature_factor: int, batch_size: int, learning_rate: float, use_square: bool, epochs: int = 16):
+    wandb.init(project="truegrad", entity="clashluke", reinit=True)
+    run = run_one(seed=seed, feature_factor=feature_factor, batch_size=batch_size, epochs=epochs,
+                  learning_rate=learning_rate, use_square=use_square)
+    for tr_loss, tr_acc, te_loss, te_acc in run:
+        wandb.log({"Train Loss": tr_loss, "Train Accuracy": tr_acc, "Test Loss": te_loss, "Test Accuracy": te_acc})
+
+    wandb.finish()
+
+
+def product(x):
+    key = next(iter(x.keys()))
+    itm = x.pop(key)
+    if x:
+        for item in product(x):
+            for val in itm:
+                item = item.copy()
+                item[key] = val
+                yield item
+    else:
+        for val in itm:
+            yield {key: val}
+
+
+def log_all():
+    options = {"seed": [0, 1],
+               "feature_factor": [4, 16, 64],
+               "batch_size": [128, 1024, 8192],
+               "learning_rate": [0.1, 0.01, 0.001],
+               "use_square": [True, False]
+               }
+    configs = list(product(options))
+    random.shuffle(configs)
+    for cfg in tqdm.tqdm(configs):
+        log_one(**cfg)
