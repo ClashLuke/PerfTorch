@@ -2,9 +2,10 @@
 Base code taken from https://github.com/pytorch/examples/blob/main/mnist/main.py
 """
 from __future__ import print_function
-
+import os
 import collections
 import random
+import traceback
 import typing
 
 import pytest
@@ -12,9 +13,12 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import tqdm
-import wandb
 from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
+
+os.environ["WANDB_SILENT"] = "true"
+
+import wandb
 
 
 class LinearFn(torch.autograd.Function):
@@ -94,18 +98,18 @@ def train(model: Net, device: torch.device, train_loader: DataLoader, optimizer:
     model.train()
     global_loss = 0
     accuracy = 0
-    batch_idx = 0
     for batch_idx, (data, target) in enumerate(train_loader):
         data, target = data.to(device), target.to(device)
         optimizer.zero_grad()
         output = model(data)
         loss = F.cross_entropy(output, target)
-        accuracy += (torch.argmax(output) == target).sum().detach()
+        accuracy += (torch.argmax(output, dim=1) == target).sum().detach()
         global_loss += loss.detach() * data.size(0)
         loss.backward()
         optimizer.step()
-    global_loss /= len(train_loader)
-    accuracy /= len(train_loader)
+    global_loss /= len(train_loader.dataset)
+    accuracy = accuracy.float()
+    accuracy /= len(train_loader.dataset)
     return global_loss.item(), accuracy.item()
 
 
@@ -119,9 +123,10 @@ def test(model: Net, device: torch.device, test_loader: DataLoader):
             data, target = data.to(device), target.to(device)
             output = model(data)
             loss += F.cross_entropy(output, target, reduction='sum').detach()
-            accuracy += (torch.argmax(output) == target).sum().detach()
+            accuracy += (torch.argmax(output, dim=1) == target).sum().detach()
 
     loss /= len(test_loader.dataset)
+    accuracy = accuracy.float()
     accuracy /= len(test_loader.dataset)
     return loss.item(), accuracy.item()
 
@@ -214,8 +219,9 @@ def run_one(seed: int, feature_factor: int, batch_size: int, epochs: int, learni
         torch.cuda.empty_cache()
 
 
-def log_one(seed: int, feature_factor: int, batch_size: int, learning_rate: float, use_square: bool, epochs: int = 16):
-    wandb.init(project="truegrad", entity="clashluke", reinit=True)
+def log_one(cfg, seed: int, feature_factor: int, batch_size: int, learning_rate: float, use_square: bool,
+            epochs: int = 16):
+    wandb.init(project="truegrad", entity="clashluke", reinit=True, config=cfg)
     run = run_one(seed=seed, feature_factor=feature_factor, batch_size=batch_size, epochs=epochs,
                   learning_rate=learning_rate, use_square=use_square)
     for tr_loss, tr_acc, te_loss, te_acc in run:
@@ -239,13 +245,21 @@ def product(x):
 
 
 def log_all():
-    options = {"seed": [0, 1],
+    options = {"use_square": [True, False],
+               "seed": [0, 1],
+               "batch_size": [32, 128, 512, 2048, 8192][::-1],
                "feature_factor": [4, 16, 64],
-               "batch_size": [128, 1024, 8192],
                "learning_rate": [0.1, 0.01, 0.001],
-               "use_square": [True, False]
                }
     configs = list(product(options))
-    random.shuffle(configs)
     for cfg in tqdm.tqdm(configs):
-        log_one(**cfg)
+        for i in range(4):
+            try:
+                log_one(cfg, **cfg)
+                break
+            except RuntimeError:
+                traceback.print_exc()
+
+
+if __name__ == '__main__':
+    log_all()
