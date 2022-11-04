@@ -2,9 +2,9 @@
 Base code taken from https://github.com/pytorch/examples/blob/main/mnist/main.py
 """
 from __future__ import print_function
-import os
+
 import collections
-import random
+import os
 import traceback
 import typing
 
