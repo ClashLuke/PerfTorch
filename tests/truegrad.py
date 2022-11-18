@@ -242,23 +242,23 @@ class AdamW(torch.optim.AdamW):
 
                 step = step_t.item()
 
-                # sqrt(sum(denom0^2)/sum(denom1^2)), but denom^2*const == exp_avg_sq -> sqrt(sum(x)/sum(y))
+                denom = (exp_avg_true_sq / (1 - beta3 ** step)).sqrt().add_(group['eps'])
+                update = exp_avg / denom
+                alpha = -group['lr'] / (1 - beta1 ** step)
+
                 if self.graft:
                     exp_avg_sq = state['exp_avg_sq']
                     exp_avg_sq.mul_(beta2).add_(p.grad.square(), alpha=1 - beta2)
-                    scale = exp_avg_sq.sum() / (exp_avg_true_sq.sum() + 1e-12)
-                else:
-                    scale = 1
+                    adam_update = (exp_avg_sq / (1 - beta2 ** step)).sqrt().add_(group['eps'])
+                    alpha = alpha * adam_update.norm() / update.norm()
 
-                denom = (exp_avg_true_sq / (1 - beta3 ** step)).sqrt().add_(group['eps'])
-                p.addcdiv_(exp_avg, denom, value=-group['lr'] / (1 - beta1 ** step) * scale)
+                p.add_(update, alpha=alpha)
 
 
 @generator_cache
 def run_one(seed: int, feature_factor: int, batch_size: int, learning_rate: float, use_square: bool, depth: int,
             classes: int, dataset: str, dropout: float, normalization: type, residual: bool, input_size: int,
-            graft: bool, beta1: float, beta2: float, beta3: float
-            ) -> typing.Iterable[float]:
+            graft: bool, beta1: float, beta2: float, beta3: float) -> typing.Iterable[float]:
     use_cuda = torch.cuda.is_available()
     if use_cuda:
         torch.cuda.empty_cache()
@@ -319,19 +319,10 @@ def product(x):
 
 
 def log_all():
-    options = {"use_square": [True, False],
-               "graft": [True, False],
-               "seed": [0, 1],
-               "batch_size": [512, 16384],
-               "feature_factor": [8, 32, 128],
-               "learning_rate": [1e-2, 1e-4],
-               "beta1": [0.8, 0.9, 0.95],
-               "beta2": [0.95, 0.99, 0.999],
-               "beta3": [0.95, 0.99, 0.999],
-               "dropout": [0, 0.2],
-               "normalization": [nn.Identity, nn.InstanceNorm2d, LayerNorm],
-               "residual": [True, False],
-               "depth": [0, 3],
+    options = {"use_square": [True, False], "graft": [True, False], "seed": [0, 1], "batch_size": [512, 16384],
+               "feature_factor": [8, 32, 128], "learning_rate": [1e-2, 1e-4], "beta1": [0.8, 0.9, 0.95],
+               "beta2": [0.95, 0.99, 0.999], "beta3": [0.95, 0.99, 0.999], "dropout": [0, 0.2],
+               "normalization": [nn.Identity, nn.InstanceNorm2d, LayerNorm], "residual": [True, False], "depth": [0, 3],
                "dataset": ["MNIST", "CIFAR10", "CIFAR100"]
                }
     configs = list(product(options))
