@@ -202,10 +202,16 @@ def generator_cache(fn: typing.Callable):
 
 
 class AdamW(torch.optim.AdamW):
+    def __init__(self, *args, graft: bool = False, beta3: typing.Optional[float] = None, **kwargs):
+        super(AdamW, self).__init__(*args, **kwargs)
+        self.graft = graft
+        self.beta3 = beta3
+
     @torch.no_grad()
     def step(self, closure=None):
         for group in self.param_groups:
             beta1, beta2 = group['betas']
+            beta3 = self.beta3 if self.beta3 is not None else beta2
 
             for p in group['params']:
                 if p.grad is None:
@@ -216,10 +222,12 @@ class AdamW(torch.optim.AdamW):
                 if len(state) == 0:
                     state['step'] = torch.tensor(0.)
                     state['exp_avg'] = torch.zeros_like(p, memory_format=torch.preserve_format)
-                    state['exp_avg_sq'] = torch.zeros_like(p, memory_format=torch.preserve_format)
+                    state['exp_avg_true_sq'] = torch.zeros_like(p, memory_format=torch.preserve_format)
+                    if self.graft:
+                        state['exp_avg_sq'] = torch.zeros_like(p, memory_format=torch.preserve_format)
 
                 exp_avg = state['exp_avg']
-                exp_avg_sq = state['exp_avg_sq']
+                exp_avg_true_sq = state['exp_avg_true_sq']
                 step_t = state['step']
 
                 # update step
@@ -230,17 +238,26 @@ class AdamW(torch.optim.AdamW):
 
                 # Decay the first and second moment running average coefficient
                 exp_avg.mul_(beta1).add_(p.grad, alpha=1 - beta1)
-                exp_avg_sq.mul_(beta2).add_(p.square_grad, alpha=1 - beta2)
+                exp_avg_true_sq.mul_(beta3).add_(p.square_grad, alpha=1 - beta3)
 
                 step = step_t.item()
 
-                denom = (exp_avg_sq / (1 - beta2 ** step)).sqrt().add_(group['eps'])
-                p.addcdiv_(exp_avg, denom, value=-group['lr'] / (1 - beta1 ** step))
+                # sqrt(sum(denom0^2)/sum(denom1^2)), but denom^2*const == exp_avg_sq -> sqrt(sum(x)/sum(y))
+                if self.graft:
+                    exp_avg_sq = state['exp_avg_sq']
+                    exp_avg_sq.mul_(beta2).add_(p.grad.square(), alpha=1 - beta2)
+                    scale = exp_avg_sq.sum() / (exp_avg_true_sq.sum() + 1e-12)
+                else:
+                    scale = 1
+
+                denom = (exp_avg_true_sq / (1 - beta3 ** step)).sqrt().add_(group['eps'])
+                p.addcdiv_(exp_avg, denom, value=-group['lr'] / (1 - beta1 ** step) * scale)
 
 
 @generator_cache
 def run_one(seed: int, feature_factor: int, batch_size: int, learning_rate: float, use_square: bool, depth: int,
-            classes: int, dataset: str, dropout: float, normalization: type, residual: bool, input_size: int
+            classes: int, dataset: str, dropout: float, normalization: type, residual: bool, input_size: int,
+            graft: bool, beta1: float, beta2: float, beta3: float
             ) -> typing.Iterable[float]:
     use_cuda = torch.cuda.is_available()
     if use_cuda:
@@ -253,9 +270,11 @@ def run_one(seed: int, feature_factor: int, batch_size: int, learning_rate: floa
     print(model)
     print(f"Parameters: {sum(p.numel() for p in model.parameters() if p.requires_grad):,d}")
     if use_square:
-        optimizer = AdamW(model.parameters(), lr=learning_rate)
+        optimizer = AdamW(model.parameters(), lr=learning_rate, betas=(beta1, beta2), beta3=beta3, graft=graft,
+                          eps=1e-12)
     else:
-        optimizer: torch.optim.Optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
+        optimizer: torch.optim.Optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, betas=(beta1, beta2),
+                                                             eps=1e-12)
 
     train_loader = get_dataset(batch_size, True, dataset)
     test_loader = get_dataset(16_384, False, dataset)
@@ -269,6 +288,10 @@ def run_one(seed: int, feature_factor: int, batch_size: int, learning_rate: floa
 
 
 def log_one(cfg):
+    if not cfg["use_square"] and cfg["graft"]:
+        return
+    if cfg["use_square"] and not cfg["graft"] and cfg["beta2"] != cfg["beta3"]:
+        return
     wandb.init(project="truegrad-varying-arch", entity="clashluke", reinit=True, config=cfg)
     run = run_one(**cfg)
     best_te_acc = 0
@@ -297,15 +320,19 @@ def product(x):
 
 def log_all():
     options = {"use_square": [True, False],
+               "graft": [True, False],
                "seed": [0, 1],
                "batch_size": [512, 16384],
-               "feature_factor": [32, 128],
+               "feature_factor": [8, 32, 128],
                "learning_rate": [1e-2, 1e-4],
+               "beta1": [0.8, 0.9, 0.95],
+               "beta2": [0.95, 0.99, 0.999],
+               "beta3": [0.95, 0.99, 0.999],
                "dropout": [0, 0.2],
                "normalization": [nn.Identity, nn.InstanceNorm2d, LayerNorm],
                "residual": [True, False],
                "depth": [0, 3],
-               "dataset": ["CIFAR10", "CIFAR100"]
+               "dataset": ["MNIST", "CIFAR10", "CIFAR100"]
                }
     configs = list(product(options))
     for cfg in tqdm.tqdm(configs):
