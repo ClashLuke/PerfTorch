@@ -249,7 +249,7 @@ class AdamW(torch.optim.AdamW):
                 if self.graft:
                     exp_avg_sq = state['exp_avg_sq']
                     exp_avg_sq.mul_(beta2).add_(p.grad.square(), alpha=1 - beta2)
-                    adam_update = (exp_avg_sq / (1 - beta2 ** step)).sqrt().add_(group['eps'])
+                    adam_update = exp_avg / (exp_avg_sq / (1 - beta2 ** step)).sqrt().add_(group['eps'])
                     alpha = alpha * adam_update.norm() / update.norm()
 
                 p.add_(update, alpha=alpha)
