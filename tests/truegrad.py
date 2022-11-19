@@ -135,6 +135,10 @@ class Net(nn.Module):
         return self.fc2(self.fc1(x))
 
 
+class NaN(ValueError):
+    pass
+
+
 def train(model: Net, device: torch.device, train_loader: DataLoader, optimizer: torch.optim.Optimizer):
     model.train()
     global_loss = 0
@@ -144,8 +148,11 @@ def train(model: Net, device: torch.device, train_loader: DataLoader, optimizer:
         optimizer.zero_grad()
         output = model(data)
         loss = F.cross_entropy(output, target)
+        if torch.logical_or(torch.isnan(loss), loss.abs() > 100).item():
+            raise NaN
         accuracy += (torch.argmax(output, dim=1) == target).sum().detach()
         global_loss += loss.detach() * data.size(0)
+
         loss.backward()
         optimizer.step()
     global_loss /= len(train_loader.dataset)
@@ -164,6 +171,8 @@ def test(model: Net, device: torch.device, test_loader: DataLoader):
             data, target = data.to(device), target.to(device)
             output = model(data)
             loss += F.cross_entropy(output, target, reduction='sum').detach()
+            if torch.logical_or(torch.isnan(loss), loss.abs() > 25).item():
+                raise NaN
             accuracy += (torch.argmax(output, dim=1) == target).sum().detach()
 
     loss /= len(test_loader.dataset)
@@ -252,6 +261,7 @@ class AdamW(torch.optim.AdamW):
 
 normalizations = {"InstanceNorm2d": nn.InstanceNorm2d, "Identity": nn.Identity, "LayerNorm": LayerNorm}
 
+
 @generator_cache
 def run_one(seed: int, feature_factor: int, batch_size: int, learning_rate: float, use_square: bool, depth: int,
             dataset: str, dropout: float, normalization: str, residual: bool, graft: bool, beta1: float, beta2: float,
@@ -279,10 +289,16 @@ def run_one(seed: int, feature_factor: int, batch_size: int, learning_rate: floa
     train_loader = get_dataset(batch_size, True, dataset)
     test_loader = get_dataset(16_384, False, dataset)
 
+    best_test_accuracy = 0
     for _ in range(EPOCHS):
         train_loss, train_accuracy = train(model, device, train_loader, optimizer)
         test_loss, test_accuracy = test(model, device, test_loader)
-        yield train_loss, train_accuracy, test_loss, test_accuracy
+        if train_loss > 10 or test_loss > 10:
+            raise NaN
+        best_test_accuracy = max(best_test_accuracy, test_accuracy)
+        wandb.log({"Train Loss": train_loss, "Train Accuracy": train_accuracy, "Test Loss": test_loss,
+                   "Test Accuracy": test_accuracy, "Best Test Accuracy": best_test_accuracy
+                   })
     if use_cuda:
         torch.cuda.empty_cache()
 
@@ -294,13 +310,10 @@ def log_one():
         return
     if not cfg["graft"] and cfg["beta2"] != cfg["beta3"]:
         return
-    run = run_one(**cfg)
-    best_te_acc = 0
-    for tr_loss, tr_acc, te_loss, te_acc in run:
-        best_te_acc = max(best_te_acc, te_acc)
-        wandb.log({"Train Loss": tr_loss, "Train Accuracy": tr_acc, "Test Loss": te_loss, "Test Accuracy": te_acc,
-                   "Best Test Accuracy": best_te_acc
-                   })
+    try:
+        run_one(**cfg)
+    except NaN:
+        wandb.finish(1)
     wandb.finish()
 
 
