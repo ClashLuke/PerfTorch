@@ -290,7 +290,7 @@ def run_one(seed: int, feature_factor: int, batch_size: int, learning_rate: floa
 def log_one(cfg):
     if not cfg["use_square"] and cfg["graft"]:
         return
-    if cfg["use_square"] and not cfg["graft"] and cfg["beta2"] != cfg["beta3"]:
+    if not cfg["graft"] and cfg["beta2"] != cfg["beta3"]:
         return
     wandb.init(project="truegrad-varying-arch", entity="clashluke", reinit=True, config=cfg)
     run = run_one(**cfg)
