@@ -250,10 +250,13 @@ class AdamW(torch.optim.AdamW):
                 p.add_(update, alpha=alpha)
 
 
+normalizations = {"InstanceNorm2d": nn.InstanceNorm2d, "Identity": nn.Identity, "LayerNorm": LayerNorm}
+
 @generator_cache
 def run_one(seed: int, feature_factor: int, batch_size: int, learning_rate: float, use_square: bool, depth: int,
-            dataset: str, dropout: float, normalization: type, residual: bool, graft: bool, beta1: float, beta2: float,
+            dataset: str, dropout: float, normalization: str, residual: bool, graft: bool, beta1: float, beta2: float,
             beta3: float) -> typing.Iterable[float]:
+    normalization = normalizations[normalization]
     input_size = 28 if dataset == "MNIST" else 32
     classes = 100 if dataset == "CIFAR100" else 10
     use_cuda = torch.cuda.is_available()
