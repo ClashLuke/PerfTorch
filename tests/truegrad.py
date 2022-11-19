@@ -257,8 +257,10 @@ class AdamW(torch.optim.AdamW):
 
 @generator_cache
 def run_one(seed: int, feature_factor: int, batch_size: int, learning_rate: float, use_square: bool, depth: int,
-            classes: int, dataset: str, dropout: float, normalization: type, residual: bool, input_size: int,
-            graft: bool, beta1: float, beta2: float, beta3: float) -> typing.Iterable[float]:
+            dataset: str, dropout: float, normalization: type, residual: bool, graft: bool, beta1: float, beta2: float,
+            beta3: float) -> typing.Iterable[float]:
+    input_size = 28 if dataset == "MNIST" else 32
+    classes = 100 if dataset == "CIFAR100" else 10
     use_cuda = torch.cuda.is_available()
     if use_cuda:
         torch.cuda.empty_cache()
@@ -287,12 +289,13 @@ def run_one(seed: int, feature_factor: int, batch_size: int, learning_rate: floa
         torch.cuda.empty_cache()
 
 
-def log_one(cfg):
+def log_one():
+    run = wandb.init(project="truegrad-varying-arch", entity="clashluke", reinit=True)
+    cfg = run.config
     if not cfg["use_square"] and cfg["graft"]:
         return
     if not cfg["graft"] and cfg["beta2"] != cfg["beta3"]:
         return
-    wandb.init(project="truegrad-varying-arch", entity="clashluke", reinit=True, config=cfg)
     run = run_one(**cfg)
     best_te_acc = 0
     for tr_loss, tr_acc, te_loss, te_acc in run:
@@ -300,46 +303,8 @@ def log_one(cfg):
         wandb.log({"Train Loss": tr_loss, "Train Accuracy": tr_acc, "Test Loss": te_loss, "Test Accuracy": te_acc,
                    "Best Test Accuracy": best_te_acc
                    })
-
     wandb.finish()
 
 
-def product(x):
-    key = next(iter(x.keys()))
-    itm = x.pop(key)
-    if x:
-        for item in product(x):
-            for val in itm:
-                item = item.copy()
-                item[key] = val
-                yield item
-    else:
-        for val in itm:
-            yield {key: val}
-
-
-def log_all():
-    options = {"use_square": [True, False], "graft": [True, False], "seed": [0, 1], "batch_size": [512, 16384],
-               "feature_factor": [8, 32, 128], "learning_rate": [1e-2, 1e-4], "beta1": [0.8, 0.9, 0.95],
-               "beta2": [0.95, 0.99, 0.999], "beta3": [0.95, 0.99, 0.999], "dropout": [0, 0.2],
-               "normalization": [nn.Identity, nn.InstanceNorm2d, LayerNorm], "residual": [True, False], "depth": [0, 3],
-               "dataset": ["MNIST", "CIFAR10", "CIFAR100"]
-               }
-    configs = list(product(options))
-    for cfg in tqdm.tqdm(configs):
-        cfg["classes"] = 100
-        cfg["input_size"] = 32
-        if cfg["dataset"] == "MNIST":
-            cfg["input_size"] = 28
-        if cfg["dataset"] == "CIFAR100":
-            cfg["classes"] = 10
-        for i in range(4):
-            try:
-                log_one(cfg)
-                break
-            except RuntimeError:
-                traceback.print_exc()
-
-
 if __name__ == '__main__':
-    log_all()
+    log_one()

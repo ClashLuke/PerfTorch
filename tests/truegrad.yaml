@@ -1,0 +1,48 @@
+program: train.py
+method: bayes
+metric:
+  name: Step
+  goal: minimize
+parameters:
+  use_square:
+    distribution: categorical
+    values: [ 0, 1 ]
+  graft:
+    distribution: categorical
+    values: [ 0, 1 ]
+  seed:
+    distribution: categorical
+    values: [ 0, 1 ]
+  batch_size:
+    distribution: categorical
+    values: [ 512, 16384 ]
+  feature_factor:
+    distribution: categorical
+    values: [ 8, 32, 128 ]
+  learning_rate:
+    distribution: categorical
+    values: [ 0.1, 0.01, 0.00001 ]
+  beta1:
+    distribution: categorical
+    values: [ 0.8, 0.9, 0.95 ]
+  beta2:
+    distribution: categorical
+    values: [ 0.95, 0.99, 0.999 ]
+  beta3:
+    distribution: categorical
+    values: [ 0.95, 0.99, 0.999 ]
+  dropout:
+    distribution: categorical
+    values: [ 0, 0.2 ]
+  normalization:
+    distribution: categorical
+    values: [ Identity, InstanceNorm2d, LayerNorm ]
+  residual:
+    distribution: categorical
+    values: [ 0, 1 ]
+  depth:
+    distribution: categorical
+    values: [ 0, 3 ]
+  dataset:
+    distribution: categorical
+    values: [ "MNIST", "CIFAR10", "CIFAR100" ]
