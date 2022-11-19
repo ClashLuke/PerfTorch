@@ -36,7 +36,8 @@ class LayerNorm(nn.Module):
         self.scale = nn.Parameter(torch.ones(in_features))
 
     def forward(self, x):
-        return MulFn.apply((x - x.mean(1, True)) / x.norm(2, 1, True) * x.size(1) ** 0.5, self.scale)
+        x = x - x.mean(1, True)
+        return MulFn.apply(x / x.norm(2, 1, True) * x.size(1) ** 0.5, self.scale)
 
 
 class LinearFn(torch.autograd.Function):
