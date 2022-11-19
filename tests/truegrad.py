@@ -148,7 +148,7 @@ def train(model: Net, device: torch.device, train_loader: DataLoader, optimizer:
         optimizer.zero_grad()
         output = model(data)
         loss = F.cross_entropy(output, target)
-        if torch.logical_or(torch.isnan(loss), loss.abs() > 100).item():
+        if torch.logical_or(torch.isnan(loss), torch.isinf(loss)).item():
             raise NaN
         accuracy += (torch.argmax(output, dim=1) == target).sum().detach()
         global_loss += loss.detach() * data.size(0)
@@ -171,8 +171,6 @@ def test(model: Net, device: torch.device, test_loader: DataLoader):
             data, target = data.to(device), target.to(device)
             output = model(data)
             loss += F.cross_entropy(output, target, reduction='sum').detach()
-            if torch.logical_or(torch.isnan(loss), loss.abs() > 25).item():
-                raise NaN
             accuracy += (torch.argmax(output, dim=1) == target).sum().detach()
 
     loss /= len(test_loader.dataset)
@@ -293,14 +291,17 @@ def run_one(seed: int, feature_factor: int, batch_size: int, learning_rate: floa
     for _ in range(EPOCHS):
         train_loss, train_accuracy = train(model, device, train_loader, optimizer)
         if train_loss > 10:
+            wandb.log({"Train Loss": train_loss, "Train Accuracy": train_accuracy,
+                       "Best Test Accuracy": best_test_accuracy
+                       })
             raise NaN
         test_loss, test_accuracy = test(model, device, test_loader)
-        if test_loss > 10:
-            raise NaN
         best_test_accuracy = max(best_test_accuracy, test_accuracy)
         wandb.log({"Train Loss": train_loss, "Train Accuracy": train_accuracy, "Test Loss": test_loss,
                    "Test Accuracy": test_accuracy, "Best Test Accuracy": best_test_accuracy
                    })
+        if test_loss > 10:
+            raise NaN
     if use_cuda:
         torch.cuda.empty_cache()
 
