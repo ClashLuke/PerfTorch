@@ -185,22 +185,6 @@ def get_dataset(batch_size: int, training: bool, dataset: str) -> DataLoader:
     return DataLoader(dataset, batch_size=batch_size, **kwargs)
 
 
-def generator_cache(fn: typing.Callable):
-    cache = collections.defaultdict(list)
-
-    def _fn(*args, **kwargs):
-        name = str(args) + str(kwargs)
-        if name in cache:
-            for idx in cache[name]:
-                yield idx
-            for _, _ in zip(range(len(cache[name])), fn(*args, **kwargs)):
-                pass
-        for out in fn(*args, **kwargs):
-            cache[name].append(out)
-            yield out
-
-    return _fn
-
 
 class AdamW(torch.optim.AdamW):
     def __init__(self, *args, graft: bool = False, beta3: typing.Optional[float] = None, **kwargs):
@@ -259,16 +243,13 @@ class AdamW(torch.optim.AdamW):
 normalizations = {"InstanceNorm2d": nn.InstanceNorm2d, "Identity": nn.Identity, "LayerNorm": LayerNorm}
 
 
-@generator_cache
 def run_one(seed: int, feature_factor: int, batch_size: int, learning_rate: float, use_square: bool, depth: int,
             dataset: str, dropout: float, normalization: str, residual: bool, graft: bool, beta1: float, beta2: float,
-            beta3: float) -> typing.Iterable[float]:
+            beta3: float):
     normalization = normalizations[normalization]
     input_size = 28 if dataset == "MNIST" else 32
     classes = 100 if dataset == "CIFAR100" else 10
     use_cuda = torch.cuda.is_available()
-    if use_cuda:
-        torch.cuda.empty_cache()
 
     torch.manual_seed(seed)
 
@@ -301,8 +282,6 @@ def run_one(seed: int, feature_factor: int, batch_size: int, learning_rate: floa
                    })
         if test_loss > 10:
             raise NaN
-    if use_cuda:
-        torch.cuda.empty_cache()
 
 
 def log_one():
