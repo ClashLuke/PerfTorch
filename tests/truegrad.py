@@ -1,6 +1,5 @@
-from __future__ import print_function
-
 import collections
+import traceback
 import typing
 
 import pytest
@@ -316,6 +315,7 @@ def log_one():
     try:
         run_one(**cfg)
     except NaN:
+        traceback.print_exc()
         wandb.finish(1)
     wandb.finish()
 
