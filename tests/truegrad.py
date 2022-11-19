@@ -1,19 +1,14 @@
 from __future__ import print_function
 
 import collections
-import os
-import traceback
 import typing
 
 import pytest
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import tqdm
 from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
-
-os.environ["WANDB_SILENT"] = "true"
 
 import wandb
 

@@ -1,8 +1,5 @@
-program: train.py
-method: bayes
-metric:
-  name: Step
-  goal: minimize
+program: truegrad.py
+method: grid
 parameters:
   use_square:
     distribution: categorical
