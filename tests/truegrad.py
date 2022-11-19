@@ -292,8 +292,10 @@ def run_one(seed: int, feature_factor: int, batch_size: int, learning_rate: floa
     best_test_accuracy = 0
     for _ in range(EPOCHS):
         train_loss, train_accuracy = train(model, device, train_loader, optimizer)
+        if train_loss > 10:
+            raise NaN
         test_loss, test_accuracy = test(model, device, test_loader)
-        if train_loss > 10 or test_loss > 10:
+        if test_loss > 10:
             raise NaN
         best_test_accuracy = max(best_test_accuracy, test_accuracy)
         wandb.log({"Train Loss": train_loss, "Train Accuracy": train_accuracy, "Test Loss": test_loss,
