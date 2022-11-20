@@ -1,3 +1,12 @@
+import wandb
+
+run = wandb.init(project="truegrad-varying-arch", entity="clashluke")
+cfg = run.config
+if not cfg["use_square"] and cfg["graft"]:
+    exit()
+if not cfg["graft"] and cfg["beta2"] != cfg["beta3"]:
+    exit()
+
 import traceback
 import typing
 
@@ -7,8 +16,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
-
-import wandb
 
 EPOCHS = 16
 
@@ -282,20 +289,10 @@ def run_one(seed: int, feature_factor: int, batch_size: int, learning_rate: floa
             raise NaN
 
 
-def log_one():
-    run = wandb.init(project="truegrad-varying-arch", entity="clashluke", reinit=True)
-    cfg = run.config
-    if not cfg["use_square"] and cfg["graft"]:
-        return
-    if not cfg["graft"] and cfg["beta2"] != cfg["beta3"]:
-        return
+if __name__ == '__main__':
     try:
         run_one(**cfg)
     except NaN:
         traceback.print_exc()
         wandb.finish(1)
     wandb.finish()
-
-
-if __name__ == '__main__':
-    log_one()
