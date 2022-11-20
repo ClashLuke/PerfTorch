@@ -1,4 +1,3 @@
-import collections
 import traceback
 import typing
 
@@ -180,11 +179,9 @@ def test(model: Net, device: torch.device, test_loader: DataLoader):
 
 
 def get_dataset(batch_size: int, training: bool, dataset: str) -> DataLoader:
-    transform = transforms.Compose([transforms.ToTensor()])
-    dataset = getattr(datasets, dataset)('../data', train=training, download=True, transform=transform)
-    kwargs = {'num_workers': 8, 'pin_memory': True, 'shuffle': True} if torch.cuda.is_available() else {}
-    return DataLoader(dataset, batch_size=batch_size, **kwargs)
-
+    dataset = getattr(datasets, dataset)('../data', train=training, download=True, transform=transforms.ToTensor())
+    dataset = list(dataset)
+    return DataLoader(dataset, batch_size=batch_size, num_workers=1, pin_memory=True, shuffle=True)
 
 
 class AdamW(torch.optim.AdamW):
