@@ -1,38 +1,33 @@
 import collections
-import time
 import typing
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import tqdm
 from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
 
-from perftorch.locoprop import ConvergenceError, Loco2
-
-
-class LayerNorm2d(nn.LayerNorm):
-    def forward(self, input):
-        return super(LayerNorm2d, self).forward(input.transpose(1, 3)).transpose(1, 3)
+import wandb
+from perftorch.locoprop import Loco
 
 
 class ConvBlock(nn.Sequential):
     def __init__(self, features: int, stride: int):
         super().__init__()
         self.add_module("relu", nn.ReLU())
-        self.add_module("norm", LayerNorm2d(features))
-        self.add_module("input", nn.Conv2d(features, features, 3, stride, padding=1))
+        # self.add_module("norm", LayerNorm2d(features))
+        self.add_module("input", nn.Linear(features, features, bias=False))
 
 
 class GlobalAvgPool(nn.Module):
     def forward(self, inp: torch.Tensor):
-        return inp.mean(dim=(2, 3))
+        return inp.mean((2, 3))
 
 
 class Head(nn.Sequential):
     def __init__(self, feature_factor: int):
         super(Head, self).__init__()
-        self.add_module("pool", GlobalAvgPool())
         self.add_module("classifier", nn.Linear(feature_factor, 10))
 
 
@@ -40,41 +35,51 @@ class Net(nn.Sequential):
     def __init__(self, feature_factor: int):
         super(Net, self).__init__()
         self.add_module("input", nn.Conv2d(1, feature_factor, 3, 2))
+        self.add_module("mean_pool", GlobalAvgPool())
         for i in range(6):
-            self.add_module(f"stage{i}", ConvBlock(feature_factor, 1 + int(i > 0 and i % 2)))
+            self.add_module(f"stage{i}", Loco(ConvBlock(feature_factor, 1 + int(i > 0 and i % 2)), 1, 8, 1))
+            self.add_module(f"norm{i}", nn.LayerNorm(feature_factor))
         self.add_module("classifier", Head(feature_factor))
 
 
-def train(model: Net, device: torch.device, train_loader: DataLoader, optimizer: torch.optim.Optimizer,
-          locoprop_lr: float, locoprop_iter: int, inner_optimizer: type, learning_rate: float) -> float:
+def train(model: Net, device: torch.device, train_loader: DataLoader, optimizer: torch.optim.Optimizer):
     model.train()
     global_loss = 0
-
+    accuracy = 0
     for batch_idx, (data, target) in enumerate(train_loader):
         data, target = data.to(device), target.to(device)
-        loss = F.cross_entropy(model(data), target)
-        loss.backward()
-        global_loss += loss.detach()
-        optimizer.step()
         optimizer.zero_grad()
-    return global_loss.item()
+        output = model(data)
+        loss = F.cross_entropy(output, target)
+        accuracy += (torch.argmax(output, dim=1) == target).sum().detach()
+        global_loss += loss.detach() * target.size(0)
+        loss.backward()
+        optimizer.step()
+    global_loss /= len(train_loader.dataset)
+    accuracy = accuracy.float()
+    accuracy /= len(train_loader.dataset)
+    return global_loss.item(), accuracy.item()
 
 
-def test(model: Net, device: torch.device, test_loader: DataLoader) -> float:
+def test(model: Net, device: torch.device, test_loader: DataLoader):
     model.eval()
-    test_loss = 0
+    loss = 0
+    accuracy = 0
     with torch.no_grad():
         for data, target in test_loader:
             data, target = data.to(device), target.to(device)
             output = model(data)
-            test_loss += F.cross_entropy(output, target, reduction='sum').detach()
+            loss += F.cross_entropy(output, target, reduction='sum').detach()
+            accuracy += (torch.argmax(output, dim=1) == target).sum().detach()
 
-    test_loss /= len(test_loader.dataset)
-    return test_loss.item()
+    loss /= len(test_loader.dataset)
+    accuracy = accuracy.float()
+    accuracy /= len(test_loader.dataset)
+    return loss.item(), accuracy.item()
 
 
-def get_model(feature_factor: int, device: typing.Union[str, torch.device], iterations, lr) -> Net:
-    return Loco2(Net(feature_factor), iterations, lr).to(device)
+def get_model(feature_factor: int, device: typing.Union[str, torch.device], locoprop_step, iterations, lr) -> Net:
+    return Net(feature_factor).to(device)
 
 
 def get_dataset(batch_size: int, training: bool) -> DataLoader:
@@ -102,8 +107,8 @@ def generator_cache(fn: typing.Callable):
 
 
 @generator_cache
-def run_one(seed: int, feature_factor: int, batch_size: int, epochs: int, locoprop_lr: float,
-            locoprop_iter: int, learning_rate: float, inner_optimizer: type, outer_optimizer: type
+def run_one(seed: int, feature_factor: int, batch_size: int, epochs: int, locoprop_step: float,
+            locoprop_iter: int, locoprop_lr: float, learning_rate: float, outer_optimizer: type
             ) -> typing.Iterable[typing.Tuple[float, float]]:
     use_cuda = torch.cuda.is_available()
     if use_cuda:
@@ -112,48 +117,58 @@ def run_one(seed: int, feature_factor: int, batch_size: int, epochs: int, locopr
     torch.manual_seed(seed)
 
     device = torch.device("cuda" if use_cuda else "cpu")
-    model = get_model(feature_factor, device, locoprop_iter, learning_rate)
+    model = get_model(feature_factor, device, locoprop_step, locoprop_iter, locoprop_lr)
     optimizer: torch.optim.Optimizer = outer_optimizer(model.parameters(), lr=learning_rate)
 
     train_loader = get_dataset(batch_size, True)
     test_loader = get_dataset(16_384, False)
 
     for _ in range(epochs):
-        start_time = time.time()
-        train(model, device, train_loader, optimizer, locoprop_lr, locoprop_iter, inner_optimizer, learning_rate)
-        out = test(model, device, test_loader)
-        yield out, time.time() - start_time
+        tr_loss, tr_acc = train(model, device, train_loader, optimizer)
+        te_loss, te_acc = test(model, device, test_loader)
+        yield tr_loss, tr_acc, te_loss, te_acc
     if use_cuda:
         torch.cuda.empty_cache()
 
 
+def product(x):
+    key = next(iter(x.keys()))
+    itm = x.pop(key)
+    if x:
+        for item in product(x):
+            for val in itm:
+                item = item.copy()
+                item[key] = val
+                yield item
+    else:
+        for val in itm:
+            yield {key: val}
+
+
 def main():
-    kwargs = {"seed": 0, "feature_factor": 16, "epochs": 128,
-              "outer_optimizer": torch.optim.SGD, "inner_optimizer": torch.optim.SGD,
-              "locoprop_lr": 1e-4  # ignored
-              }
+    options = {"locoprop_iter": [0],
+               "learning_rate": [10 ** -i for i in range(1, 5)],
+               "feature_factor": [16],
+               "locoprop_lr": [10 ** -i for i in range(1)],
+               "locoprop_step": [10 ** -i for i in range(31)],
+               "batch_size": [1],
+               "outer_optimizer": [torch.optim.SGD, torch.optim.AdamW, torch.optim.RMSprop],
+               "seed": [0, 1],
+               }
+    configs = list(product(options))
 
-    losses = {f"[LR={lr:9.6f}][LocalIterations={itr:1d}][Batch={batch:5d}]":
-                  run_one(batch_size=batch, locoprop_iter=itr, learning_rate=lr, **kwargs)
-              for lr in [3 ** -i for i in range(2, 9)] for itr in range(3) for batch in [4 ** i for i in range(3, 8)]}
-
-    for i in range(kwargs["epochs"]):
-        for name, base in losses.items():
-            try:
-                loss, took = next(base)
-            except StopIteration:
-                print(f"[Epoch={i}]{name} Skipped")
-                continue
-            except ConvergenceError as exc:
-                print(f'[Epoch={i}]{name} {exc}')
-                continue
-            if loss > 10:
-                print(f"[Epoch={i}]{name} diverged")
-                losses[name] = iter([])  # -> raise StopIteration in next loop call
-                continue
-
-            print(f"[Epoch={i}]{name} Loss: {loss:8.6f} - Took: {took:4.1f}s")
-        print("-" * 12)
+    for conf in tqdm.tqdm(configs):
+        wandb.init(project="locoprop-2", entity="clashluke", reinit=True, config=conf)
+        best_te_acc = 0
+        for tr_loss, tr_acc, te_loss, te_acc in run_one(epochs=8, **conf):
+            best_te_acc = max(best_te_acc, te_acc)
+            print(tr_loss, tr_acc, te_loss, te_acc)
+            if tr_loss > 10 or tr_loss != tr_loss or te_loss > 10 or te_loss != te_loss:
+                break
+            wandb.log({"Train Loss": tr_loss, "Train Accuracy": tr_acc, "Test Loss": te_loss, "Test Accuracy": te_acc,
+                       "Peak Test Accuracy": best_te_acc
+                       })
+        wandb.finish()
 
 
 if __name__ == '__main__':
