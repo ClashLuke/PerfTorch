@@ -209,7 +209,8 @@ def run_one(seed: int, feature_factor: int, batch_size: int, learning_rate: floa
     print(model)
     print(f"Parameters: {sum(p.numel() for p in model.parameters() if p.requires_grad):,d}")
 
-    optimizer = getattr(optim, optimizer)(model.parameters(), lr=learning_rate, betas=(beta1, beta2, beta3, beta4),
+    betas = (beta1, beta2, beta3,) + (beta4,) * (optimizer == "TGLaProp")
+    optimizer = getattr(optim, optimizer)(model.parameters(), lr=learning_rate, betas=betas,
                                           graft=graft, enforce_baseline=not use_square)
 
     train_dset, test_dset = DSETS[dataset]
