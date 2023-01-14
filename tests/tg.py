@@ -255,7 +255,7 @@ def wrapped():
 
 def main(sweep_id: str):
     while True:
-        wandb.agent(sweep_id, function=wrapped, project="truegrad-laprop", entity="clashluke")
+        wandb.agent(sweep_id, function=wrapped, project="truegrad-rmsprop", entity="clashluke")
 
 
 if __name__ == '__main__':
