@@ -6,11 +6,11 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import typer
-import wandb
 from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
-
 from truegrad import optim
+
+import wandb
 
 EPOCHS = 16
 
@@ -228,8 +228,7 @@ def run_one(seed: int, feature_factor: int, batch_size: int, learning_rate: floa
         test_loss, test_accuracy = test(model, device, test_loader)
         best_test_accuracy = max(best_test_accuracy, test_accuracy)
         wandb.log({"Train Loss": train_loss, "Train Accuracy": train_accuracy, "Test Loss": test_loss,
-                   "Test Accuracy": test_accuracy, "Best Test Accuracy": best_test_accuracy
-                   })
+                   "Test Accuracy": test_accuracy, "Best Test Accuracy": best_test_accuracy})
         if test_loss > 10:
             raise NaN
 
