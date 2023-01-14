@@ -209,7 +209,7 @@ def run_one(seed: int, feature_factor: int, batch_size: int, learning_rate: floa
     print(model)
     print(f"Parameters: {sum(p.numel() for p in model.parameters() if p.requires_grad):,d}")
 
-    betas = (beta1, beta2, beta3,) + (beta4,) * (optimizer == "TGLaProp")
+    betas = (beta1, beta2,) + (beta3,) * (optimizer != "TGRMSProp") + (beta4,) * (optimizer == "TGLaProp")
     optimizer = getattr(optim, optimizer)(model.parameters(), lr=learning_rate, betas=betas,
                                           graft=graft, enforce_baseline=not use_square)
 
@@ -247,7 +247,7 @@ def wrapped():
 
     try:
         run_one(**cfg)
-    except NaN:
+    except:
         traceback.print_exc()
         wandb.finish(1)
     wandb.finish()

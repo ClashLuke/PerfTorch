@@ -15,7 +15,7 @@ parameters:
     values: [ 16384 ]
   feature_factor:
     distribution: categorical
-    values: [ 128 ]
+    values: [ 32 ]
   learning_rate:
     distribution: categorical
     values: [ 0.01 ]
