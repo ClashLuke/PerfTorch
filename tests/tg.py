@@ -242,6 +242,8 @@ def wrapped():
         return
     if cfg["optimizer"] == "TGAdamW" and cfg["beta2"] != cfg["beta4"]:
         return
+    if cfg["optimizer"] == "TGRMSProp" and (cfg["beta2"] != cfg["beta4"] or cfg["beta1"] != cfg["beta3"]):
+        return
 
     try:
         run_one(**cfg)
