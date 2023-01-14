@@ -1,12 +1,3 @@
-import wandb
-
-run = wandb.init(project="truegrad-varying-arch", entity="clashluke")
-cfg = run.config
-if not cfg["use_square"] and cfg["graft"]:
-    exit()
-if not cfg["graft"] and cfg["beta2"] != cfg["beta3"]:
-    exit()
-
 import traceback
 import typing
 
@@ -14,10 +5,21 @@ import pytest
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import typer
+import wandb
 from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
 
+from truegrad import optim
+
 EPOCHS = 16
+
+
+def get_dataset(dset: str, training: bool):
+    return list(getattr(datasets, dset)('../data', train=training, download=True, transform=transforms.ToTensor()))
+
+
+DSETS = {dset: [get_dataset(dset, training) for training in [True, False]] for dset in ["MNIST", "CIFAR10", "CIFAR100"]}
 
 
 class MulFn(torch.autograd.Function):
@@ -32,7 +34,7 @@ class MulFn(torch.autograd.Function):
             return None, None, None, None
         inp, scale = ctx.saved_tensors
         scale_grad = (dy * inp).sum((0, 2, 3)).reshape(-1)
-        scale.square_grad = (dy * inp).square().sum((0, 2, 3)).reshape(-1) * inp.size(0)
+        scale.sum_grad_squared = (dy * inp).square().sum((0, 2, 3)).reshape(-1) * inp.size(0)
         return dy * scale.view(1, -1, 1, 1), scale_grad
 
 
@@ -58,7 +60,7 @@ class LinearFn(torch.autograd.Function):
         lhs = ''.join(chr(ord('a') + i) for i in range(dy.ndim - 1))
         d_wgt = torch.einsum(f"{lhs}y,{lhs}z->yz", inp, dy)
         d_wgt_sq = torch.einsum(f"{lhs}y,{lhs}z->yz", inp.square(), dy.square() * inp.size(0))  # * size since mean
-        wgt.square_grad = d_wgt_sq
+        wgt.sum_grad_squared = d_wgt_sq
         d_inp = torch.einsum(f"{lhs}z,yz->{lhs}y", dy, wgt)
         return d_inp, d_wgt
 
@@ -126,8 +128,8 @@ class Net(nn.Module):
         self.conv1 = ConvBlock(1 if input_size == 28 else 3, feature_factor, use_square, 2, normalization, residual,
                                False)
         self.stem = nn.Sequential(
-                *(ConvBlock(feature_factor, feature_factor, use_square, 1, normalization, residual, True) for _ in
-                  range(depth)))
+            *(ConvBlock(feature_factor, feature_factor, use_square, 1, normalization, residual, True) for _ in
+              range(depth)))
         self.conv2 = ConvBlock(feature_factor, feature_factor * 2, use_square, 2, normalization, residual, True)
         self.fc1 = LinearBlock((((input_size - 3) // 2 - 2 * (1 + depth)) // 2 + 1) ** 2 * feature_factor * 2,
                                feature_factor * 4, dropout, use_square)
@@ -185,64 +187,8 @@ def test(model: Net, device: torch.device, test_loader: DataLoader):
     return loss.item(), accuracy.item()
 
 
-def get_dataset(batch_size: int, training: bool, dataset: str) -> DataLoader:
-    dataset = getattr(datasets, dataset)('../data', train=training, download=True, transform=transforms.ToTensor())
-    dataset = list(dataset)
+def get_dataloader(batch_size: int, training: bool, dataset: str) -> DataLoader:
     return DataLoader(dataset, batch_size=batch_size, num_workers=1, pin_memory=True, shuffle=True)
-
-
-class AdamW(torch.optim.AdamW):
-    def __init__(self, *args, graft: bool = False, beta3: typing.Optional[float] = None, **kwargs):
-        super(AdamW, self).__init__(*args, **kwargs)
-        self.graft = graft
-        self.beta3 = beta3
-
-    @torch.no_grad()
-    def step(self, closure=None):
-        for group in self.param_groups:
-            beta1, beta2 = group['betas']
-            beta3 = self.beta3 if self.beta3 is not None else beta2
-
-            for p in group['params']:
-                if p.grad is None:
-                    continue
-
-                state = self.state[p]
-
-                if len(state) == 0:
-                    state['step'] = torch.tensor(0.)
-                    state['exp_avg'] = torch.zeros_like(p, memory_format=torch.preserve_format)
-                    state['exp_avg_true_sq'] = torch.zeros_like(p, memory_format=torch.preserve_format)
-                    if self.graft:
-                        state['exp_avg_sq'] = torch.zeros_like(p, memory_format=torch.preserve_format)
-
-                exp_avg = state['exp_avg']
-                exp_avg_true_sq = state['exp_avg_true_sq']
-                step_t = state['step']
-
-                # update step
-                step_t += 1
-
-                # Perform stepweight decay
-                p.mul_(1 - group['lr'] * group['weight_decay'])
-
-                # Decay the first and second moment running average coefficient
-                exp_avg.mul_(beta1).add_(p.grad, alpha=1 - beta1)
-                exp_avg_true_sq.mul_(beta3).add_(p.square_grad, alpha=1 - beta3)
-
-                step = step_t.item()
-
-                denom = (exp_avg_true_sq / (1 - beta3 ** step)).sqrt().add_(group['eps'])
-                update = exp_avg / denom
-                alpha = -group['lr'] / (1 - beta1 ** step)
-
-                if self.graft:
-                    exp_avg_sq = state['exp_avg_sq']
-                    exp_avg_sq.mul_(beta2).add_(p.grad.square(), alpha=1 - beta2)
-                    adam_update = exp_avg / (exp_avg_sq / (1 - beta2 ** step)).sqrt().add_(group['eps'])
-                    alpha = alpha * adam_update.norm() / update.norm()
-
-                p.add_(update, alpha=alpha)
 
 
 normalizations = {"InstanceNorm2d": nn.InstanceNorm2d, "Identity": nn.Identity, "LayerNorm": LayerNorm}
@@ -250,7 +196,7 @@ normalizations = {"InstanceNorm2d": nn.InstanceNorm2d, "Identity": nn.Identity, 
 
 def run_one(seed: int, feature_factor: int, batch_size: int, learning_rate: float, use_square: bool, depth: int,
             dataset: str, dropout: float, normalization: str, residual: bool, graft: bool, beta1: float, beta2: float,
-            beta3: float):
+            beta3: float, beta4: float, optimizer: str):
     normalization = normalizations[normalization]
     input_size = 28 if dataset == "MNIST" else 32
     classes = 100 if dataset == "CIFAR100" else 10
@@ -262,15 +208,13 @@ def run_one(seed: int, feature_factor: int, batch_size: int, learning_rate: floa
     model = Net(feature_factor, use_square, depth, classes, dropout, normalization, residual, input_size).to(device)
     print(model)
     print(f"Parameters: {sum(p.numel() for p in model.parameters() if p.requires_grad):,d}")
-    if use_square:
-        optimizer = AdamW(model.parameters(), lr=learning_rate, betas=(beta1, beta2), beta3=beta3, graft=graft,
-                          eps=1e-12)
-    else:
-        optimizer: torch.optim.Optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, betas=(beta1, beta2),
-                                                             eps=1e-12)
 
-    train_loader = get_dataset(batch_size, True, dataset)
-    test_loader = get_dataset(16_384, False, dataset)
+    optimizer = getattr(optim, optimizer)(model.parameters(), lr=learning_rate, betas=(beta1, beta2, beta3, beta4),
+                                          graft=graft, enforce_baseline=not use_square)
+
+    train_dset, test_dset = DSETS[dataset]
+    train_loader = DataLoader(train_dset, batch_size=batch_size, num_workers=1, pin_memory=True, shuffle=True)
+    test_loader = DataLoader(test_dset, batch_size=16_384, num_workers=1, pin_memory=True, shuffle=True)
 
     best_test_accuracy = 0
     for _ in range(EPOCHS):
@@ -289,10 +233,28 @@ def run_one(seed: int, feature_factor: int, batch_size: int, learning_rate: floa
             raise NaN
 
 
-if __name__ == '__main__':
+def wrapped():
+    run = wandb.init()
+    cfg = run.config
+    if not cfg["use_square"] and cfg["graft"]:
+        return
+    if not cfg["graft"] and (cfg["beta1"] != cfg["beta3"] or cfg["beta2"] != cfg["beta4"]):
+        return
+    if cfg["optimizer"] == "TGAdamW" and cfg["beta2"] != cfg["beta4"]:
+        return
+
     try:
         run_one(**cfg)
     except NaN:
         traceback.print_exc()
         wandb.finish(1)
     wandb.finish()
+
+
+def main(sweep_id: str):
+    while True:
+        wandb.agent(sweep_id, function=wrapped, project="truegrad-laprop", entity="clashluke")
+
+
+if __name__ == '__main__':
+    typer.run(main)
